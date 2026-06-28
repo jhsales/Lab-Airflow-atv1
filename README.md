@@ -1,208 +1,70 @@
-# Lab — Aula 1: Fundamentos de Orquestração com Airflow
+# 🛒 ShopBrasil Data Pipeline v3 (FakeStore API Integration)
 
-> Pipeline ETL completo: Open-Meteo API → Pandas → PostgreSQL
+Este repositório contém a engenharia de um pipeline de dados (ETL) robusto e totalmente dockerizado para o ecossistema **ShopBrasil**. A solução realiza a ingestão de dados brutos de produtos, processa métricas analíticas agregadas em paralelo e persiste os resultados de forma idempotente em um banco de dados relacional isolado.
 
----
+## 🏗️ Arquitetura e Engenharia do Pipeline
 
-## Estrutura do projeto
+O pipeline foi desenhado utilizando o **Apache Airflow 2.9.3 (TaskFlow API)**, explorando conceitos avançados de paralelismo e escalabilidade:
 
-```
-lab-airflow/
-├── docker-compose.yml          ← ambiente completo (Airflow + 2 bancos)
-├── dags/
-│   ├── clima_etl.py            ← DAG principal do lab
-├── scripts/
-│   ├── testar_dag_local.py     ← testa as funções sem o Airflow
-│   └── inspecionar_resultado.py← consulta o banco após a execução
-├── sql/
-│   └── init.sql                ← cria as tabelas no postgres-lab
-├── logs/                       ← criada automaticamente pelo Airflow
-└── plugins/                    ← (vazia por enquanto)
-```
+1. **Ingestão (`buscar_produtos`)**: Consome os dados de catálogo diretamente da API REST FakeStore.
+2. **Orquestração Dinâmica (`extrair_categorias`)**: Identifica as categorias de produtos existentes em tempo de execução.
+3. **Mapeamento Dinâmico (`calcular_metricas_por_categoria`)**: Utiliza a feature de `.expand()` do Airflow para criar tasks paralelas dinamicamente para cada categoria encontrada. Cada task calcula isoladamente: preço médio, preço mínimo, preço máximo e volumetria.
+4. **Persistência Resiliente (`salvar_no_postgres`)**: Realiza a carga (Load) em uma tabela dedicada. Utiliza uma estratégia de **UPSERT (`ON CONFLICT DO UPDATE`)**, garantindo que o pipeline seja totalmente idempotente (pode rodar múltiplas vezes sem duplicar dados).
 
 ---
 
-## Pré-requisitos
+## 🛠️ Stack Tecnológica
 
-| Ferramenta | Versão mínima | Verificar com |
-|------------|---------------|---------------|
-| Docker Desktop | 4.x | `docker --version` |
-| Docker Compose | v2 (embutido) | `docker compose version` |
-| Python | 3.9+ (opcional, para scripts locais) | `python --version` |
-
-> **RAM mínima:** 4 GB livres para o Docker. O Airflow com LocalExecutor usa ~1.5 GB.
+* **Orquestrador:** Apache Airflow 2.9.3 (Python 3.11)
+* **Banco de Metadados:** PostgreSQL 16 (`airflow-meta-db`)
+* **Banco de Destino / Analytics:** PostgreSQL 16 (`airflow-lab-db`)
+* **Infraestrutura:** Docker & Docker Compose
 
 ---
 
-## Passo 1 — Subir o ambiente
+## 📦 Como Inicializar o Ambiente
 
-```bash
-# Clone o repositório (ou descompacte o zip do lab)
-cd lab-airflow
+### Pré-requisitos
+* Docker e Docker Compose configurados no sistema.
 
-# Criar pastas necessárias
-mkdir -p logs plugins
+### Inicialização da Infraestrutura
 
-# Subir todos os serviços em background
-docker compose up -d
-
-# Acompanhar a inicialização (aguardar "healthy" em todos)
-docker compose ps
-
-# Ver logs em tempo real (opcional)
-docker compose logs -f airflow-webserver
-```
-
-Aguarde até ver `healthy` nas colunas de status:
-
-```
-NAME                   STATUS
-airflow-meta-db        healthy
-airflow-lab-db         healthy
-airflow-scheduler      healthy
-airflow-webserver      healthy
-```
-
-> ⏱️ Primeira vez: pode levar 2-3 minutos para baixar as imagens.
-
----
-
-## Passo 2 — Acessar a UI
-
-Abra no navegador: **http://localhost:8080**
-
-| Campo | Valor |
-|-------|-------|
-| Usuário | `admin` |
-| Senha | `admin` |
-
----
-
-## Passo 3 — Ativar e executar o DAG
-
-1. Na lista de DAGs, localize **`clima_etl`**
-2. Clique no toggle à esquerda para **ativar** (passa de cinza para azul)
-3. Clique no botão **▶ Trigger DAG** (ícone de play) → confirme
-4. Observe as tasks ficando **verde** uma a uma no Grid View
-
-> 💡 A primeira execução pode levar 1-2 min enquanto o Airflow instala as dependências Python no worker.
-
----
-
-## Passo 4 — Explorar a UI
-
-### Logs de uma task
-- Clique em qualquer task colorida no Grid View
-- Selecione **Log** no menu lateral
-
-### Gantt Chart
-- Na página do DAG, clique em uma run específica
-- Selecione a aba **Gantt**
-- Observe o tempo de cada task — qual foi a mais lenta?
-
-### XComs
-- Menu superior: **Admin → XComs**
-- Filtre por `dag_id = clima_etl`
-- Veja os dados trocados entre as tasks
-
-### Connection criada automaticamente
-- Menu superior: **Admin → Connections**
-- Localize `postgres_lab` — criada pelo `airflow-init`
-
----
-
-## Passo 5 — Inspecionar os dados no banco
-
-O banco de destino está acessível em `localhost:5433`:
-
-```bash
-# Usando psql (se instalado)
-psql -h localhost -p 5433 -U lab -d labdb
-
-# Ou usando o container diretamente
-docker exec -it airflow-lab-db psql -U lab -d labdb
-
-# Consultas úteis:
-SELECT cidade, COUNT(*), ROUND(AVG(temperatura_c)::numeric, 1) as media_c
-FROM clima
-GROUP BY cidade;
-
-SELECT * FROM v_clima_resumo;
-```
-
-Ou usando o script Python (requer `pip install psycopg2-binary pandas`):
-
-```bash
-python scripts/inspecionar_resultado.py
-python scripts/inspecionar_resultado.py --data 2024-03-15
-```
-
----
-
-## Passo 6 — Simular uma falha e observar retry
-
-1. Edite `dags/clima_etl.py`
-2. Na função `buscar_clima()`, altere a URL para algo inválido:
-   ```python
-   url = "https://api.open-meteo.com/ROTA_INVALIDA"
+### 1. Clone este repositório para sua máquina local:
+   ```bash
+   git clone [https://github.com/jhsales/Lab-Airflow-atv1.git](https://github.com/jhsales/Lab-Airflow-atv1.git)
+   cd Lab-Airflow-atv1
    ```
-3. Salve o arquivo — o Airflow detecta automaticamente em ~30s
-4. Acione o DAG novamente
-5. Observe no Grid View:
-   - Task ficando **laranja** (retry em andamento)
-   - Logs mostrando as tentativas com backoff exponencial
-   - Task ficando **vermelha** após esgotar os retries
+   ### 1.1 Suba a stack do Docker em modo background:
+   ```bash
+   docker compose up -d
+   ````
+   ### 1.2 Acesse o painel de controle do Airflow através do navegador:
+   ```bash
+   URL: http://localhost:8080
+   ```
+Credenciais: Usuário: admin | Senha: admin
 
-6. Corrija a URL, salve, e reexecute — as tasks ficam verdes
-
----
-
-## NÃO FAZER -[Testar as funções localmente (sem Docker)]
-
+### 2.⚙️ Configuração da Conexão com o Banco de Dados
+Para que a Task final grave os dados corretamente, certifique-se de que a conexão postgres_default esteja apontando para o container de destino correto. Caso precise reinjetar a conexão via terminal, utilize o comando abaixo:
 ```bash
-pip install requests pandas
-
-# Testa fetch + transform e salva resultados em /tmp/
-# python scripts/testar_dag_local.py
-
-# Testa só o fetch
-# python scripts/testar_dag_local.py --step fetch
-
-# Testa só o transform (usa dados do fetch anterior)
-# python scripts/testar_dag_local.py --step transform
+docker exec -it airflow-scheduler airflow connections add 'postgres_default' \
+  --conn-type 'postgres' \
+  --conn-host 'postgres-lab' \
+  --conn-login 'lab' \
+  --conn-password 'lab123' \
+  --conn-schema 'labdb' \
+  --conn-port 5432
 ```
+### 3 📊 Estrutura do Banco de Dados Destino
+Os insights processados são armazenados na tabela insight_precos_categoria com a seguinte estrutura lógica:
+categoria (Chave Primária / Texto)
 
----
+preco_medio (Numérico)
 
-## Derrubar o ambiente
+preco_minimo (Numérico)
 
-```bash
-# Para os containers (mantém os dados)
-docker compose down
+preco_maximo (Numérico)
 
-# Para e apaga tudo (volumes incluídos)
-docker compose down -v
-```
+quantidade_produtos (Inteiro)
 
----
-
-## Entregável
-
-Ao final do lab, entregar:
-
-- [ ] Print do **Gantt Chart** com todas as tasks verdes
-- [ ] Print da tela de **XComs** mostrando os dados trocados
-- [ ] (Extensão) Print do DAG avançado com as tasks paralelas no Gantt
-
----
-
-## Troubleshooting
-
-| Problema | Solução |
-|----------|---------|
-| `localhost:8080` não abre | `docker compose ps` — verificar se `airflow-webserver` está `healthy` |
-| DAG não aparece na UI | Verificar erros com `docker compose logs airflow-scheduler` |
-| Task travada em "running" | Clicar na task → Clear → Confirm |
-| Erro de Connection | Admin → Connections → verificar `postgres_lab` |
-| Sem espaço em disco | `docker system prune` para liberar imagens antigas |
-| Erro de memória | Aumentar RAM disponível no Docker Desktop (Settings → Resources) |
+data_atualizacao (Timestamp)
