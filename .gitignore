@@ -1,0 +1,5 @@
+logs/
+plugins/
+.env
+postgres-meta-data/
+postgres-lab-data/
